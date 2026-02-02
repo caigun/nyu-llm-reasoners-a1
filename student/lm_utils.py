@@ -85,3 +85,108 @@ class RoPE(nn.Module):
         rotated_x = einsum(R_i, x_rearranged, '... d i j, ... d i -> ... d j')
         out_x = rearrange(rotated_x, '... elements_per_R rotate_d -> ... (elements_per_R rotate_d)')
         return out_x
+    
+class Softmax(nn.Module):
+    
+    def __init__(self, dim: int = -1):
+        super(Softmax, self).__init__()
+        self.dim = dim
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        exp_x = torch.exp(x - torch.max(x, dim=self.dim, keepdim=True).values)
+        sum_exp_x = torch.sum(exp_x, dim=self.dim, keepdim=True)
+        return exp_x / sum_exp_x
+    
+class Attention(nn.Module):
+    
+    def __init__(self):
+        super(Attention, self).__init__()
+        self.softmax = Softmax(dim=-1)
+
+    def forward(self, Q: torch.Tensor, K: torch.Tensor, V: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        E = einsum(Q, K, '... q d, ... k d -> ... q k')/torch.sqrt(torch.tensor(Q.shape[-1], dtype=torch.float32))  # /sqrt(d_k)
+        E = E.masked_fill(mask == False, float('-inf'))
+        A = self.softmax(E)
+        attn_out = einsum(A, V, '... q k, ... k d -> ... q d')
+        return attn_out
+
+class MultiheadAttention(nn.Module):
+
+    def __init__(self, d_model: int, num_heads: int):
+        super(MultiheadAttention, self).__init__()
+        assert d_model % num_heads == 0, "d_model must be divisible by num_heads"
+        self.d_model = d_model
+        self.num_heads = num_heads
+        self.d_k = d_model // num_heads
+        self.d_v = d_model // num_heads
+
+        self.W_q = nn.Parameter(torch.Tensor(d_model, d_model))
+        self.W_k = nn.Parameter(torch.Tensor(d_model, d_model))
+        self.W_v = nn.Parameter(torch.Tensor(d_model, d_model))
+        self.W_o = nn.Parameter(torch.Tensor(d_model, d_model))
+
+        self.attention = Attention()
+
+    def forward(self, x: torch.Tensor, rope: RoPE = None, token_positions: torch.Tensor = None) -> torch.Tensor:
+
+        mask = torch.tril(torch.ones((x.shape[-2], x.shape[-2]), dtype=torch.bool))
+        
+        Q = einsum(x, self.W_q, '... seq_len d_model, d_model_out d_model -> ... seq_len d_model_out')
+        K = einsum(x, self.W_k, '... seq_len d_model, d_model_out d_model -> ... seq_len d_model_out')
+        V = einsum(x, self.W_v, '... seq_len d_model, d_model_out d_model -> ... seq_len d_model_out')
+
+        Q = rearrange(Q, '... seq_len (num_heads d_k) -> ... num_heads seq_len d_k', num_heads=self.num_heads)
+        K = rearrange(K, '... seq_len (num_heads d_k) -> ... num_heads seq_len d_k', num_heads=self.num_heads)
+        V = rearrange(V, '... seq_len (num_heads d_v) -> ... num_heads seq_len d_v', num_heads=self.num_heads)
+
+        if rope is not None:
+            Q = rope(Q, token_positions)
+            K = rope(K, token_positions)
+
+        attn_out = self.attention(Q, K, V, mask)
+        attn_out = rearrange(attn_out, '... num_heads seq_len d_v -> ... seq_len (num_heads d_v)')
+
+        out = einsum(attn_out, self.W_o, '... seq_len d_model, d_model_out d_model -> ... seq_len d_model_out')
+
+        return out
+    
+class TransformerBlock(nn.Module):
+    
+    def __init__(self, d_model: int, num_heads: int, d_ff: int, eps=1e-8):
+        super(TransformerBlock, self).__init__()
+        self.mha = MultiheadAttention(d_model, num_heads)
+        self.rms1 = RMSNorm(d_model, eps)
+        self.swiglu = Swiglu(d_ff, d_model)
+        self.rms2 = RMSNorm(d_model, eps)
+    
+    def forward(self, x: torch.Tensor, rope: RoPE = None, token_positions: torch.Tensor = None) -> torch.Tensor:
+        attn_out = self.mha(self.rms1(x), rope=rope, token_positions=token_positions)
+        x = x + attn_out
+        ff_out = self.swiglu(self.rms2(x))
+        x = x + ff_out
+        return x
+    
+class TransformerLM(nn.Module):
+    
+    def __init__(self, vocab_size: int, context_length: int, num_layers: int, d_model: int, num_heads: int, d_ff: int, eps=1e-8, rope_theta: float = 10000.0, device=None, dtype=None):
+        super(TransformerLM, self).__init__()
+        self.context_length = context_length
+        self.rope_theta = rope_theta
+        self.embedding = Embedding(vocab_size, d_model, device=device, dtype=dtype)
+        self.position_ids = torch.arange(self.context_length, device=device).unsqueeze(0)
+        self.rope = RoPE(theta=self.rope_theta, d_k=d_model // num_heads, max_seq_len=self.context_length, device=device)
+        self.layers = nn.ModuleList([
+            TransformerBlock(d_model, num_heads, d_ff, eps) for _ in range(num_layers)
+        ])
+        self.rms_final = RMSNorm(d_model, eps)
+        self.output_linear = Linear(d_model, vocab_size, device=device, dtype=dtype)
+    
+    def forward(self, input_ids: torch.Tensor) -> torch.Tensor:
+        x = self.embedding(input_ids)
+        token_positions = self.position_ids[..., :input_ids.shape[-1]]
+
+        for layer in self.layers:
+            x = layer(x, rope=self.rope, token_positions=token_positions)
+        x = self.rms_final(x)
+        logits = self.output_linear(x)
+        return logits

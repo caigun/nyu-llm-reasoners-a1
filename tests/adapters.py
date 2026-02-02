@@ -114,6 +114,8 @@ def run_scaled_dot_product_attention(
     Returns:
         Float[Tensor, " ... queries d_v"]: Output of SDPA
     """
+    attention = Attention()
+    return attention(Q, K, V, mask)
     raise NotImplementedError
 
 
@@ -150,6 +152,12 @@ def run_multihead_self_attention(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
+    mha = MultiheadAttention(d_model, num_heads)
+    mha.W_q.data = q_proj_weight
+    mha.W_k.data = k_proj_weight
+    mha.W_v.data = v_proj_weight
+    mha.W_o.data = o_proj_weight
+    return mha(in_features)
     raise NotImplementedError
 
 
@@ -192,6 +200,13 @@ def run_multihead_self_attention_with_rope(
         Float[Tensor, " ... sequence_length d_out"]: Tensor with the output of running your optimized, batched multi-headed attention
         implementation with the given QKV projection weights and input features.
     """
+    mha = MultiheadAttention(d_model, num_heads)
+    rope = RoPE(theta, d_model // num_heads, max_seq_len)
+    mha.W_q.data = q_proj_weight
+    mha.W_k.data = k_proj_weight
+    mha.W_v.data = v_proj_weight
+    mha.W_o.data = o_proj_weight
+    return mha(in_features, rope=rope, token_positions=token_positions)
     raise NotImplementedError
 
 
@@ -289,6 +304,18 @@ def run_transformer_block(
         Float[Tensor, "batch sequence_length d_model"] Tensor with the output of
         running the Transformer block on the input features while using RoPE.
     """
+    transformer_block = TransformerBlock(d_model, num_heads, d_ff)
+    transformer_block.mha.W_q.data = weights["attn.q_proj.weight"]
+    transformer_block.mha.W_k.data = weights["attn.k_proj.weight"]
+    transformer_block.mha.W_v.data = weights["attn.v_proj.weight"]
+    transformer_block.mha.W_o.data = weights["attn.output_proj.weight"]
+    transformer_block.rms1.weight.data = weights["ln1.weight"]
+    transformer_block.swiglu.w1.data = weights["ffn.w1.weight"]
+    transformer_block.swiglu.w2.data = weights["ffn.w2.weight"]
+    transformer_block.swiglu.w3.data = weights["ffn.w3.weight"]
+    transformer_block.rms2.weight.data = weights["ln2.weight"]
+    rope = RoPE(theta, d_model // num_heads, max_seq_len)
+    return transformer_block(in_features, rope=rope, token_positions=torch.arange(in_features.shape[1]))
     raise NotImplementedError
 
 
@@ -371,6 +398,31 @@ def run_transformer_lm(
         Float[Tensor, "batch_size sequence_length vocab_size"]: Tensor with the predicted unnormalized
         next-word distribution for each token.
     """
+    transformer_lm = TransformerLM(
+        vocab_size,
+        context_length=context_length,
+        num_layers=num_layers,
+        d_model=d_model,
+        num_heads=num_heads,
+        d_ff=d_ff,
+        rope_theta=rope_theta,
+    )
+    transformer_lm.embedding.weight.data = weights["token_embeddings.weight"]
+    transformer_lm.output_linear.weight.data = weights["lm_head.weight"]
+    transformer_lm.rms_final.weight.data = weights["ln_final.weight"]
+    for layer_idx in range(num_layers):
+        layer_prefix = f"layers.{layer_idx}."
+        transformer_block = transformer_lm.layers[layer_idx]
+        transformer_block.mha.W_q.data = weights[layer_prefix + "attn.q_proj.weight"]
+        transformer_block.mha.W_k.data = weights[layer_prefix + "attn.k_proj.weight"]
+        transformer_block.mha.W_v.data = weights[layer_prefix + "attn.v_proj.weight"]
+        transformer_block.mha.W_o.data = weights[layer_prefix + "attn.output_proj.weight"]
+        transformer_block.rms1.weight.data = weights[layer_prefix + "ln1.weight"]
+        transformer_block.swiglu.w1.data = weights[layer_prefix + "ffn.w1.weight"]
+        transformer_block.swiglu.w2.data = weights[layer_prefix + "ffn.w2.weight"]
+        transformer_block.swiglu.w3.data = weights[layer_prefix + "ffn.w3.weight"]
+        transformer_block.rms2.weight.data = weights[layer_prefix + "ln2.weight"]
+    return transformer_lm(in_indices)
     raise NotImplementedError
 
 
@@ -450,6 +502,8 @@ def run_softmax(in_features: Float[Tensor, " ..."], dim: int) -> Float[Tensor, "
         Float[Tensor, "..."]: Tensor of with the same shape as `in_features` with the output of
         softmax normalizing the specified `dim`.
     """
+    softmax = Softmax(dim)
+    return softmax(in_features)
     raise NotImplementedError
 
 
