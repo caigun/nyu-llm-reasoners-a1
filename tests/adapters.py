@@ -11,6 +11,7 @@ from torch import Tensor
 
 from student.bpe import bpe_train, Tokenizer
 from student.lm_utils import *
+from student.trainer import *
 
 
 def run_linear(
@@ -486,6 +487,7 @@ def run_get_batch(
         is the sampled input sequences, and the second tuple item is the corresponding
         language modeling labels.
     """
+    return load_data(dataset, batch_size, context_length, device)
     raise NotImplementedError
 
 
@@ -522,6 +524,8 @@ def run_cross_entropy(
     Returns:
         Float[Tensor, ""]: The average cross-entropy loss across examples.
     """
+    ce_loss = CrossEntropyLoss()
+    return ce_loss(inputs, targets)
     raise NotImplementedError
 
 
@@ -534,13 +538,14 @@ def run_gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm:
 
     The gradients of the parameters (parameter.grad) should be modified in-place.
     """
-    raise NotImplementedError
+    gradient_clipping(parameters, max_l2_norm)
 
 
 def get_adamw_cls() -> Any:
     """
     Returns a torch.optim.Optimizer that implements AdamW.
     """
+    return AdamW
     raise NotImplementedError
 
 
@@ -569,6 +574,7 @@ def run_get_lr_cosine_schedule(
     Returns:
         Learning rate at the given iteration under the specified schedule.
     """
+    return cosine_lr_scheduler(it, max_learning_rate, min_learning_rate, warmup_iters, cosine_cycle_iters)
     raise NotImplementedError
 
 
