@@ -8,10 +8,21 @@ class Linear(nn.Module):
         super(Linear, self).__init__()
         self.in_features = in_features
         self.out_features = out_features
-        self.weight = nn.Parameter(torch.Tensor(out_features, in_features))
+        self.weight = nn.Parameter(torch.Tensor(out_features, in_features).to(device=device, dtype=dtype))
     
     def forward(self, input: torch.Tensor) -> torch.Tensor:
         return einsum(input, self.weight, '... in_features, out_features in_features -> ... out_features')
+
+# class Linear(nn.Module):
+    
+#     def __init__(self, in_features: int, out_features: int, device=None, dtype=None):
+#         super(Linear, self).__init__()
+#         self.in_features = in_features
+#         self.out_features = out_features
+#         self.linear = nn.Linear(in_features, out_features, bias=False, device=device, dtype=dtype)
+#         self.weight = self.linear.weight
+#     def forward(self, x):
+#         return self.linear(x)
     
 
 class Embedding(nn.Module):
@@ -20,14 +31,14 @@ class Embedding(nn.Module):
         super(Embedding, self).__init__()
         self.num_embeddings = num_embeddings
         self.embedding_dim = embedding_dim
-        self.weight = nn.Parameter(torch.Tensor(num_embeddings, embedding_dim))
+        self.weight = nn.Parameter(torch.Tensor(num_embeddings, embedding_dim).to(device=device, dtype=dtype))
     
     def forward(self, token_ids: torch.Tensor) -> torch.Tensor:
         return self.weight[token_ids, :]
     
 class RMSNorm(nn.Module):
     
-    def __init__(self, d_model: int, eps=1e-8, device=None, dtype=None):
+    def __init__(self, d_model: int, eps=1e-5, device=None, dtype=None):
         super(RMSNorm, self).__init__()
         self.d_model = d_model
         self.eps = eps
@@ -43,15 +54,23 @@ class RMSNorm(nn.Module):
         out = out.to(in_type)
 
         return out
+
+class SiLU(nn.Module):
     
+    def __init__(self):
+        super(SiLU, self).__init__()
+    
+    def forward(self, in_features: torch.Tensor) -> torch.Tensor:
+        return in_features / (1 + torch.exp(-in_features))
+
+
 class Swiglu(nn.Module):
     
-    def __init__(self, d_ff: int, d_model: int):
+    def __init__(self, d_ff: int, d_model: int, device=None, dtype=None):
         super(Swiglu, self).__init__()
-        self.w1 = nn.Parameter(torch.Tensor(d_ff, d_model))
-        self.w2 = nn.Parameter(torch.Tensor(d_model, d_ff))
-        self.w3 = nn.Parameter(torch.Tensor(d_ff, d_model))
-
+        self.w1 = nn.Parameter(torch.Tensor(d_ff, d_model).to(device=device, dtype=dtype))
+        self.w2 = nn.Parameter(torch.Tensor(d_model, d_ff).to(device=device, dtype=dtype))
+        self.w3 = nn.Parameter(torch.Tensor(d_ff, d_model).to(device=device, dtype=dtype))
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         x1 = einsum(x, self.w1, '... d_model, d_ff d_model -> ... d_ff')
         x_silu = x1 / (1 + torch.exp(-x1))
@@ -63,7 +82,7 @@ class Swiglu(nn.Module):
     
 class RoPE(nn.Module):
     
-    def __init__(self, theta: float, d_k: int, max_seq_len: int, device=None):
+    def __init__(self, theta: float, d_k: int, max_seq_len: int, dtype=None, device=None):
         super(RoPE, self).__init__()
         self.dim = d_k
         inv_freq = 1.0 / (theta ** (torch.arange(0, d_k, 2).float() / d_k)) # (d_k/2,)
@@ -112,7 +131,7 @@ class Attention(nn.Module):
 
 class MultiheadAttention(nn.Module):
 
-    def __init__(self, d_model: int, num_heads: int):
+    def __init__(self, d_model: int, num_heads: int, device=None, dtype=None):
         super(MultiheadAttention, self).__init__()
         assert d_model % num_heads == 0, "d_model must be divisible by num_heads"
         self.d_model = d_model
@@ -120,10 +139,10 @@ class MultiheadAttention(nn.Module):
         self.d_k = d_model // num_heads
         self.d_v = d_model // num_heads
 
-        self.W_q = nn.Parameter(torch.Tensor(d_model, d_model))
-        self.W_k = nn.Parameter(torch.Tensor(d_model, d_model))
-        self.W_v = nn.Parameter(torch.Tensor(d_model, d_model))
-        self.W_o = nn.Parameter(torch.Tensor(d_model, d_model))
+        self.W_q = nn.Parameter(torch.Tensor(d_model, d_model).to(device=device, dtype=dtype))
+        self.W_k = nn.Parameter(torch.Tensor(d_model, d_model).to(device=device, dtype=dtype))
+        self.W_v = nn.Parameter(torch.Tensor(d_model, d_model).to(device=device, dtype=dtype))
+        self.W_o = nn.Parameter(torch.Tensor(d_model, d_model).to(device=device, dtype=dtype))
 
         self.attention = Attention()
 
@@ -152,11 +171,11 @@ class MultiheadAttention(nn.Module):
     
 class TransformerBlock(nn.Module):
     
-    def __init__(self, d_model: int, num_heads: int, d_ff: int, eps=1e-8):
+    def __init__(self, d_model: int, num_heads: int, d_ff: int, eps=1e-5, device=None, dtype=None):
         super(TransformerBlock, self).__init__()
-        self.mha = MultiheadAttention(d_model, num_heads)
+        self.mha = MultiheadAttention(d_model, num_heads, device=device, dtype=dtype)
         self.rms1 = RMSNorm(d_model, eps)
-        self.swiglu = Swiglu(d_ff, d_model)
+        self.swiglu = Swiglu(d_ff, d_model, device=device, dtype=dtype)
         self.rms2 = RMSNorm(d_model, eps)
     
     def forward(self, x: torch.Tensor, rope: RoPE = None, token_positions: torch.Tensor = None) -> torch.Tensor:
@@ -168,7 +187,7 @@ class TransformerBlock(nn.Module):
     
 class TransformerLM(nn.Module):
     
-    def __init__(self, vocab_size: int, context_length: int, num_layers: int, d_model: int, num_heads: int, d_ff: int, eps=1e-8, rope_theta: float = 10000.0, device=None, dtype=None):
+    def __init__(self, vocab_size: int, context_length: int, num_layers: int, d_model: int, num_heads: int, d_ff: int, eps=1e-5, rope_theta: float = 10000.0, device=None, dtype=None):
         super(TransformerLM, self).__init__()
         self.context_length = context_length
         self.rope_theta = rope_theta

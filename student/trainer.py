@@ -4,6 +4,8 @@ import torch
 from collections.abc import Callable, Iterable
 from typing import Optional
 import math
+import os
+import typing
 
 from einops import rearrange
 
@@ -123,3 +125,22 @@ def load_data(x: np.array, batch_size: int, context_len: int, device: torch.devi
     y_tensor = torch.tensor(y_batch, device=device)
 
     return x_tensor, y_tensor
+
+def save_checkpoint(model: nn.Module,
+                    optimizer: torch.optim.Optimizer,
+                    iteration: int, out: str | os.PathLike | typing.BinaryIO | typing.IO[bytes]) -> None:
+    checkpoint = {
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'iteration': iteration
+    }
+    torch.save(checkpoint, out)
+
+def load_checkpoint(model: nn.Module,
+                    optimizer: torch.optim.Optimizer,
+                    inp: str | os.PathLike | typing.BinaryIO | typing.IO[bytes]) -> int:
+    checkpoint = torch.load(inp)
+    model.load_state_dict(checkpoint['model_state_dict'])
+    optimizer.load_state_dict(checkpoint['optimizer_state_dict'])
+    iteration = checkpoint['iteration']
+    return iteration
