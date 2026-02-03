@@ -43,6 +43,9 @@ def apply_single_merge(bytes_tuple, merge):
             i += 1
     return output
 
+def _word_pairs(word):
+    return [(word[i], word[i + 1]) for i in range(len(word) - 1)]
+
 def bpe_train(input_path, special_tokens, vocab_size=1000, number_of_processes=4):
     pretok_dict = bpe_pretokenize_all(input_path, number_of_processes, special_tokens)
     byte_pretok_dict = {}
@@ -76,6 +79,71 @@ def bpe_train(input_path, special_tokens, vocab_size=1000, number_of_processes=4
         latest_bytified_dict = new_bytified_dict
 
         counts = compute_pairwise_counts(latest_bytified_dict)
+    pbar.close()
+    return vocab, merges
+
+def bpe_train_fast(input_path, special_tokens, vocab_size=1000, number_of_processes=4):
+    pretok_dict = bpe_pretokenize_all(input_path, number_of_processes, special_tokens)
+    byte_pretok_dict = {}
+    for key, value in pretok_dict.items():
+        key_bytes = tuple([bytes([b]) for b in key])
+        byte_pretok_dict.update({key_bytes: value})
+
+    merges = []
+    vocab = {}
+    for tok in special_tokens:
+        vocab[len(vocab.keys())] = tok.encode("utf8")
+    for i in range(0, 256):
+        vocab[len(vocab.keys())] = bytes([i])
+
+    words = [list(key) for key in byte_pretok_dict.keys()]
+    counts = [byte_pretok_dict[key] for key in byte_pretok_dict.keys()]
+
+    pair_counts = Counter()
+    pair_to_indices = {}
+    for idx, word in enumerate(words):
+        for pair in _word_pairs(word):
+            pair_counts[pair] += counts[idx]
+            pair_to_indices.setdefault(pair, set()).add(idx)
+
+    pbar = tqdm(total=vocab_size - len(vocab))
+    while len(vocab) < vocab_size and pair_counts:
+        pbar.update(1)
+        best_count = max(pair_counts.values())
+        best_pairs = [pair for pair, count in pair_counts.items() if count == best_count]
+        best_pair = max(best_pairs)
+
+        merges.append(best_pair)
+        vocab[len(vocab)] = best_pair[0] + best_pair[1]
+
+        affected_indices = list(pair_to_indices.get(best_pair, set()))
+        for idx in affected_indices:
+            old_word = words[idx]
+            old_pairs = _word_pairs(old_word)
+            if not old_pairs:
+                continue
+
+            old_pair_counts = Counter(old_pairs)
+            for pair, occ in old_pair_counts.items():
+                pair_counts[pair] -= counts[idx] * occ
+                if pair_counts[pair] <= 0:
+                    del pair_counts[pair]
+                    pair_to_indices.pop(pair, None)
+                else:
+                    indices = pair_to_indices.get(pair)
+                    if indices is not None:
+                        indices.discard(idx)
+
+            new_word = apply_single_merge(old_word, best_pair)
+            words[idx] = new_word
+
+            new_pairs = _word_pairs(new_word)
+            if new_pairs:
+                new_pair_counts = Counter(new_pairs)
+                for pair, occ in new_pair_counts.items():
+                    pair_counts[pair] += counts[idx] * occ
+                    pair_to_indices.setdefault(pair, set()).add(idx)
+
     pbar.close()
     return vocab, merges
 
@@ -136,29 +204,32 @@ class Tokenizer(object):
         #     i = pivot
         # return ans
 
-        merge_ranks = {pair: rank for rank, pair in enumerate(self.merges)}
+
+        # merge_ranks = {pair: rank for rank, pair in enumerate(self.merges)}
 
         symbols = [bytes([b]) for b in chunk]
         if not symbols:
             return []
 
-        while True:
-            best_i = None
-            best_rank = None
+        for merge in self.merges:
+            symbols = apply_single_merge(symbols, merge)
+        # while True:
+        #     best_i = None
+        #     best_rank = None
 
-            for i in range(len(symbols) - 1):
-                pair = (symbols[i], symbols[i + 1])
-                rank = merge_ranks.get(pair)
-                if rank is None:
-                    continue
-                if best_rank is None or rank < best_rank:
-                    best_rank = rank
-                    best_i = i
+        #     for i in range(len(symbols) - 1):
+        #         pair = (symbols[i], symbols[i + 1])
+        #         rank = merge_ranks.get(pair)
+        #         if rank is None:
+        #             continue
+        #         if best_rank is None or rank < best_rank:
+        #             best_rank = rank
+        #             best_i = i
 
-            if best_i is None:
-                break
+        #     if best_i is None:
+        #         break
 
-            symbols[best_i : best_i + 2] = [symbols[best_i] + symbols[best_i + 1]]
+        #     symbols[best_i : best_i + 2] = [symbols[best_i] + symbols[best_i + 1]]
 
         return [self.bytes_to_id[s] for s in symbols]
 

@@ -9,7 +9,7 @@ import torch
 from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
-from student.bpe import bpe_train, Tokenizer
+from student.bpe import bpe_train, Tokenizer, bpe_train_fast
 from student.lm_utils import *
 from student.trainer import *
 
@@ -670,4 +670,5 @@ def run_train_bpe(
                 representing that <token1> was merged with <token2>.
                 Merges are ordered by order of creation.
     """
-    return bpe_train(input_path, special_tokens, vocab_size)
+    # return bpe_train(input_path, special_tokens, vocab_size)
+    return bpe_train_fast(input_path, special_tokens, vocab_size)
